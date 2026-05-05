@@ -1,3 +1,7 @@
 [submodule "project2-bin"]
-	path = project2-bin
-	url = git@github.com:feit-comp30023-2026/project2-bin.git
+    path = project2-bin
+    url = https://github.com/feit-comp30023-2026/project2-bin.git
+
+[submodule "test-data"]
+    path = test-data
+    url = https://github.com/feit-comp30023-2026/project2-cases.git

@@ -1,1 +1,30 @@
+# Rust compilation output
 target/
+Cargo.lock
+
+# Compiled binaries and libraries (as per project requirements)
+client
+server
+*.o
+*.a
+
+# Build artifacts
+*.rlib
+*.rmeta
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+*.profraw
+*.profdata
+
