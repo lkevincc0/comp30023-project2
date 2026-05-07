@@ -4,11 +4,11 @@ mod engine_bindings;
 mod protocol;
 
 use crate::engine_bindings::Engine;
-use crate::protocol::{MSG_JOIN, MSG_OK, MSG_ERROR, MSG_READY, send_msg, recv_msg};
+use crate::protocol::{MSG_ERROR, MSG_JOIN, MSG_OK, MSG_READY, recv_msg, send_msg};
 use std::env;
+use std::ffi::c_int;
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::io::FromRawFd;
-use std::ffi::c_int;
 
 macro_rules! dprintln {
     () => {
@@ -44,8 +44,13 @@ unsafe extern "C" {
     // create a socket, return fs, fail return -1
     fn socket(domain: c_int, ty: c_int, protocol: c_int) -> c_int;
     // set socket options
-    fn setsockopt(sockfd: c_int, level: c_int, optname: c_int,
-                  optval: *const std::ffi::c_void, optlen: u32) -> c_int;
+    fn setsockopt(
+        sockfd: c_int,
+        level: c_int,
+        optname: c_int,
+        optval: *const std::ffi::c_void,
+        optlen: u32,
+    ) -> c_int;
     // bind socket to ip and port
     fn bind(sockfd: c_int, addr: *const std::ffi::c_void, addrlen: u32) -> c_int;
     // start listen requests
@@ -60,7 +65,7 @@ fn create_listener(port: u16) -> std::io::Result<TcpListener> {
         if fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        
+
         // set SO_REUSEADDR options
         let enable: c_int = 1; // port reuse
         if setsockopt(
@@ -69,16 +74,17 @@ fn create_listener(port: u16) -> std::io::Result<TcpListener> {
             SO_REUSEADDR,
             &enable as *const c_int as *const std::ffi::c_void,
             std::mem::size_of::<c_int>() as u32,
-        ) < 0 {
+        ) < 0
+        {
             close(fd);
             return Err(std::io::Error::last_os_error());
         }
-        
+
         // bind localhost port
         let mut addr = [0u8; 16];
         addr[0..2].copy_from_slice(&(AF_INET as u16).to_be_bytes());
         addr[2..4].copy_from_slice(&port.to_be_bytes());
-        
+
         if bind(fd, addr.as_ptr() as *const std::ffi::c_void, 16) < 0 {
             close(fd);
             return Err(std::io::Error::last_os_error());
@@ -90,7 +96,7 @@ fn create_listener(port: u16) -> std::io::Result<TcpListener> {
         }
 
         Ok(TcpListener::from_raw_fd(fd))
-    }    
+    }
 }
 
 fn accept_player(
@@ -132,7 +138,6 @@ fn accept_player(
     Ok(stream)
 }
 
-
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -152,7 +157,7 @@ fn main() {
         }
     };
     dprintln!("Engine Successfully Initialized");
-    
+
     // create tcp listener
     let listener = match create_listener(port) {
         Ok(l) => l,
@@ -162,7 +167,7 @@ fn main() {
         }
     };
     dprintln!("TCP Listener Successfully Created");
-    
+
     // TASK1: game id fix 0
     let game_id: u32 = 0;
 

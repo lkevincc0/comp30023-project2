@@ -48,8 +48,7 @@ fn recv_msg(stream: &mut TcpStream) -> std::io::Result<(u8, Vec<u8>)> {
     stream.read_exact(&mut header)?;
 
     let msg_type = header[0];
-    let payload_len =
-        u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
+    let payload_len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
 
     let mut payload = vec![0u8; payload_len];
     stream.read_exact(&mut payload)?;
@@ -78,11 +77,11 @@ impl ClientImplementation {
             Ok(s) => {
                 dprintln!("TCP connection established.");
                 s
-            },
+            }
             Err(e) => {
                 dprintln!("TCP connection failed: {}", e);
-                return false
-            },
+                return false;
+            }
         };
 
         // send join messages
@@ -150,4 +149,3 @@ impl ClientImplementation {
         self.stream = None;
     }
 }
-

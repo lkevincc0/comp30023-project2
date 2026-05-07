@@ -46,3 +46,11 @@ server.a: server_rs/src/*.rs
 clean:
 	rm -f client server client.a server.a server_rs/server.o
 
+.PHONY: format
+format:
+	cd client_rs && cargo fmt
+	cd server_rs && cargo fmt
+
+.PHONY: test
+test: server
+	tests/task1.sh
