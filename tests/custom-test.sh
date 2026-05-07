@@ -20,7 +20,7 @@ NC='\033[0m'
 
 # start & stop server
 start_server() {
-    ./server $PORT &
+    ./server $PORT 2>/dev/null &
     SERVER_PID=$!
     sleep 0.3
 }
@@ -103,7 +103,7 @@ fi
 echo ""
 
 echo ""
-echo "running 4 tests"
+echo "running 6 tests"
 echo ""
 
 # test connect1: single client sends JOIN, expects OK
@@ -129,8 +129,14 @@ fi
 
 # test ready: both clients get OK then READY
 start_server
-P1_OUT=$(py_send_recv2 "$JOIN_MSG")
+P1_TMP=$(mktemp)
+py_send_recv2 "$JOIN_MSG" > "$P1_TMP" &
+P1_PID=$!
+sleep 0.2
 P2_OUT=$(py_send_recv2 "$JOIN_MSG")
+wait "$P1_PID" 2>/dev/null || true
+P1_OUT=$(cat "$P1_TMP")
+rm -f "$P1_TMP"
 stop_server
 if echo "$P1_OUT" | grep -q "MSG1:${OK_HEX}" && \
    echo "$P1_OUT" | grep -q "MSG2:${READY_HEX}" && \
@@ -149,6 +155,30 @@ if [ "$RESULT" = "$ERROR_HEX" ]; then
     run_test "wrong_game_id" "ok"
 else
     run_test "wrong_game_id" "fail" "expected $ERROR_HEX got $RESULT"
+fi
+
+# ---- custom tests (mirror test-data-custom/task1) ----
+
+# test malformed_join: msg_type != JOIN should yield ERROR
+JOIN_BAD_TYPE="990000000400000000"   # type=0x99, len=4, game_id=0
+start_server
+RESULT=$(py_send "$JOIN_BAD_TYPE")
+stop_server
+if [ "$RESULT" = "$ERROR_HEX" ]; then
+    run_test "malformed_join" "ok"
+else
+    run_test "malformed_join" "fail" "expected $ERROR_HEX got $RESULT"
+fi
+
+# test bad_join_len: JOIN with payload length != 4 should yield ERROR
+JOIN_BAD_LEN="01000000080000000000000000"   # type=0x01, len=8, payload=8 bytes of 0
+start_server
+RESULT=$(py_send "$JOIN_BAD_LEN")
+stop_server
+if [ "$RESULT" = "$ERROR_HEX" ]; then
+    run_test "bad_join_len" "ok"
+else
+    run_test "bad_join_len" "fail" "expected $ERROR_HEX got $RESULT"
 fi
 
 # summary

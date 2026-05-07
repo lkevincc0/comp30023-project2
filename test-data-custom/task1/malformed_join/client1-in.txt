@@ -1,0 +1,7 @@
+# Send a packet whose msg_type byte is not 0x01 (JOIN).
+# Wire bytes: 99 00000004 00000000  (bogus type, len=4, game_id=0)
+
+p1 init 0 standard 0
+p1 connect localhost 30023
+p1 send_raw 9900000004 00000000
+p1 end_in_connect

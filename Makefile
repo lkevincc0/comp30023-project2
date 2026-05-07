@@ -53,4 +53,4 @@ format:
 
 .PHONY: test
 test: server
-	tests/task1.sh
+	tests/custom-test.sh

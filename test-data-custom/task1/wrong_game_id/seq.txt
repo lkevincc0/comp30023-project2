@@ -1,0 +1,14 @@
+# Start server on port 30023
+server_start 30023
+
+# Run client in test mode with timeout
+client_run client1-in.txt 7
+
+# Verify that client 1 has exited successfully
+client_wait 1
+
+# Verify the output of client 1 (server should reject with ERROR)
+client_verify 1 client1-out.txt
+
+# Server may exit with error after rejecting the JOIN
+server_stop 1

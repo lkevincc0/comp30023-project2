@@ -1,0 +1,8 @@
+# Server is sent a packet whose msg_type is not JOIN (0x01).
+# Server should reply ERROR (0x82) with zero-length payload and reject.
+
+server_start 30023
+client_run client1-in.txt 7
+client_wait 1
+client_verify 1 client1-out.txt
+server_stop 1

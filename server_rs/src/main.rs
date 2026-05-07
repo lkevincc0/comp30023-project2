@@ -82,7 +82,7 @@ fn create_listener(port: u16) -> std::io::Result<TcpListener> {
 
         // bind localhost port
         let mut addr = [0u8; 16];
-        addr[0..2].copy_from_slice(&(AF_INET as u16).to_be_bytes());
+        addr[0..2].copy_from_slice(&(AF_INET as u16).to_ne_bytes());
         addr[2..4].copy_from_slice(&port.to_be_bytes());
 
         if bind(fd, addr.as_ptr() as *const std::ffi::c_void, 16) < 0 {
@@ -176,7 +176,7 @@ fn main() {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to accept player 1: {}", e);
-            std::process::exit(4); // 规范：accept 失败 → exit 4
+            std::process::exit(4);
         }
     };
     dprintln!("P1 Accepted");

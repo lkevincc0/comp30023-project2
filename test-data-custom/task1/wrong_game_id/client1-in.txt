@@ -1,0 +1,10 @@
+# Client tries to JOIN with a non-zero game id; server should respond ERROR.
+
+# Init p1, game id 1 (server is fixed at 0 for task1)
+p1 init 1 standard 0
+
+# Connect to server on localhost:30023
+p1 connect localhost 30023
+
+# End client thread, ensure that state is in connection establishment
+p1 end_in_connect

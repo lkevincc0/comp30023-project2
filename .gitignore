@@ -1,6 +1,7 @@
 # Rust compilation output
 target/
 Cargo.lock
+.cargo/
 
 # Compiled binaries and libraries (as per project requirements)
 client

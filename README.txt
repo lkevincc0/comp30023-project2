@@ -1,4 +1,4 @@
-COMP30023 Project 2 2026 - Skeleton Repository
+COMP30023 Project 2 2026
 
 How to use:
 1. If using Rust, install the 1.95.0 stable unknown-linux-gnu toolchain
@@ -18,3 +18,6 @@ How to use:
 10. You are allowed to create a library to share between your client and server implementations
 
 Please report any issues with the provided skeleton code or binaries on Ed.
+
+How to test:
+1. run all avaliable test: `make test`

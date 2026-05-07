@@ -1,0 +1,7 @@
+# Send JOIN with payload length 8 instead of 4.
+# Wire bytes: 01 00000008 0000000000000000
+
+p1 init 0 standard 0
+p1 connect localhost 30023
+p1 send_raw 010000000800000000 00000000
+p1 end_in_connect

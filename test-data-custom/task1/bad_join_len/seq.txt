@@ -1,0 +1,7 @@
+# JOIN with a payload length other than 4 should be rejected with ERROR.
+
+server_start 30023
+client_run client1-in.txt 7
+client_wait 1
+client_verify 1 client1-out.txt
+server_stop 1
