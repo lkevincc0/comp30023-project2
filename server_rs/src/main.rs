@@ -1,115 +1,197 @@
 extern crate core;
 
 mod engine_bindings;
-use crate::engine_bindings::{Direction, Engine, Ship, TurnResult};
+mod protocol;
 
-/// Example usage of engine.
-/// Use this as a reference only.
+use crate::engine_bindings::Engine;
+use crate::protocol::{MSG_JOIN, MSG_OK, MSG_ERROR, MSG_READY, send_msg, recv_msg};
+use std::env;
+use std::net::{TcpListener, TcpStream};
+use std::os::unix::io::FromRawFd;
+use std::ffi::c_int;
+
+macro_rules! dprintln {
+    () => {
+        #[cfg(debug_assertions)]
+        println!("[{}:{}]", file!(), line!());
+    };
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        {
+            eprintln!(
+                "[{}:{}] {}",
+                file!(),
+                line!(),
+                format_args!($($arg)*)
+            );
+        }
+    };
+}
+
+// sockets variable
+#[cfg(target_os = "linux")]
+const SOL_SOCKET: c_int = 1;
+#[cfg(target_os = "linux")]
+const SO_REUSEADDR: c_int = 2;
+#[cfg(target_os = "macos")]
+const SOL_SOCKET: c_int = 0xffff;
+#[cfg(target_os = "macos")]
+const SO_REUSEADDR: c_int = 0x0004;
+const AF_INET: c_int = 2;
+const SOCK_STREAM: c_int = 1;
+
+unsafe extern "C" {
+    // create a socket, return fs, fail return -1
+    fn socket(domain: c_int, ty: c_int, protocol: c_int) -> c_int;
+    // set socket options
+    fn setsockopt(sockfd: c_int, level: c_int, optname: c_int,
+                  optval: *const std::ffi::c_void, optlen: u32) -> c_int;
+    // bind socket to ip and port
+    fn bind(sockfd: c_int, addr: *const std::ffi::c_void, addrlen: u32) -> c_int;
+    // start listen requests
+    fn listen(sockfd: c_int, backlog: c_int) -> c_int;
+    // close socket
+    fn close(fd: c_int) -> c_int;
+}
+
+fn create_listener(port: u16) -> std::io::Result<TcpListener> {
+    unsafe {
+        let fd: i32 = socket(AF_INET, SOCK_STREAM, 0);
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        
+        // set SO_REUSEADDR options
+        let enable: c_int = 1; // port reuse
+        if setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_REUSEADDR,
+            &enable as *const c_int as *const std::ffi::c_void,
+            std::mem::size_of::<c_int>() as u32,
+        ) < 0 {
+            close(fd);
+            return Err(std::io::Error::last_os_error());
+        }
+        
+        // bind localhost port
+        let mut addr = [0u8; 16];
+        addr[0..2].copy_from_slice(&(AF_INET as u16).to_be_bytes());
+        addr[2..4].copy_from_slice(&port.to_be_bytes());
+        
+        if bind(fd, addr.as_ptr() as *const std::ffi::c_void, 16) < 0 {
+            close(fd);
+            return Err(std::io::Error::last_os_error());
+        }
+
+        if listen(fd, 128) < 0 {
+            close(fd);
+            return Err(std::io::Error::last_os_error());
+        }
+
+        Ok(TcpListener::from_raw_fd(fd))
+    }    
+}
+
+fn accept_player(
+    listener: &TcpListener,
+    game_id: u32,
+    engine: &mut Engine,
+    is_first: bool, // use it to decide init game or not
+) -> std::io::Result<TcpStream> {
+    // wait util all join
+    let (mut stream, _addr) = listener.accept()?;
+
+    // read client join messages
+    let (msg_type, payload) = recv_msg(&mut stream)?;
+
+    if msg_type != MSG_JOIN || payload.len() != 4 {
+        let _ = send_msg(&mut stream, MSG_ERROR, &[]);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "expected JOIN with 4-byte game_id",
+        ));
+    }
+
+    let join_id = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+    if join_id != game_id {
+        let _ = send_msg(&mut stream, MSG_ERROR, &[]);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "wrong game_id",
+        ));
+    }
+
+    // first player touch game init
+    if is_first {
+        engine.init_game(game_id);
+    }
+
+    // reply OK
+    send_msg(&mut stream, MSG_OK, &[])?;
+    Ok(stream)
+}
+
+
 fn main() {
-    let mut engine = Engine::new().expect("Failed to initialise engine");
+    let args: Vec<String> = env::args().collect();
 
-    assert!(engine.init_game(0));
+    if args.len() != 2 {
+        eprintln!("Usage: {} <port>", args[0]);
+    }
 
-    let ships_player1 = [
-        Ship {
-            coordinate: "A1".to_owned(),
-            length: 5,
-            direction: Direction::Horizontal,
-        },
-        Ship {
-            coordinate: "A2".to_owned(),
-            length: 4,
-            direction: Direction::Vertical,
-        },
-        Ship {
-            coordinate: "C2".to_owned(),
-            length: 3,
-            direction: Direction::Horizontal,
-        },
-        Ship {
-            coordinate: "G1".to_owned(),
-            length: 2,
-            direction: Direction::Vertical,
-        },
-    ];
-    let result = engine.place_ships(0, &ships_player1);
-    assert!(result == 1);
+    let port: u16 = args[1].parse().expect("invalid port");
+    dprintln!("Use Port: {}", port);
 
-    let ships_player2 = [
-        Ship {
-            coordinate: "B1".to_owned(),
-            length: 5,
-            direction: Direction::Horizontal,
-        },
-        Ship {
-            coordinate: "B2".to_owned(),
-            length: 4,
-            direction: Direction::Vertical,
-        },
-        Ship {
-            coordinate: "D2".to_owned(),
-            length: 3,
-            direction: Direction::Horizontal,
-        },
-        Ship {
-            coordinate: "H1".to_owned(),
-            length: 2,
-            direction: Direction::Vertical,
-        },
-    ];
-    let result2 = engine.place_ships(0, &ships_player2);
-    assert!(result2 == 2);
+    // init engine
+    let mut engine: Engine = match Engine::new() {
+        Some(e) => e,
+        None => {
+            eprintln!("Failed to initialise engine");
+            std::process::exit(2);
+        }
+    };
+    dprintln!("Engine Successfully Initialized");
+    
+    // create tcp listener
+    let listener = match create_listener(port) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Socket error: {}", e);
+            std::process::exit(3);
+        }
+    };
+    dprintln!("TCP Listener Successfully Created");
+    
+    // TASK1: game id fix 0
+    let game_id: u32 = 0;
 
-    // Ships were already placed
-    let result3 = engine.place_ships(0, &ships_player1);
-    assert!(result3 == -1);
+    // accept p1
+    let mut p1 = match accept_player(&listener, game_id, &mut engine, true) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to accept player 1: {}", e);
+            std::process::exit(4); // 规范：accept 失败 → exit 4
+        }
+    };
+    dprintln!("P1 Accepted");
 
-    assert!(engine.take_turn(0, 1, "B1") == TurnResult::Hit);
-    assert!(engine.take_turn(0, 2, "J10") == TurnResult::Miss);
-    assert!(engine.take_turn(0, 1, "C1") == TurnResult::Hit);
-    assert!(engine.take_turn(0, 2, "J9") == TurnResult::Miss);
-    assert!(engine.take_turn(0, 1, "D1") == TurnResult::Hit);
-    assert!(engine.take_turn(0, 2, "J8") == TurnResult::Miss);
-    assert!(engine.take_turn(0, 1, "E1") == TurnResult::Hit);
-    assert!(engine.take_turn(0, 2, "J7") == TurnResult::Miss);
-    assert!(engine.take_turn(0, 1, "F1") == TurnResult::Sunk5);
-    assert!(engine.take_turn(0, 2, "J6") == TurnResult::Miss);
+    // accept p2
+    let mut p2 = match accept_player(&listener, game_id, &mut engine, false) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to accept player 2: {}", e);
+            std::process::exit(4);
+        }
+    };
+    dprintln!("P2 Accepted");
 
-    // Repeat of previous coordinate
-    assert!(engine.take_turn(0, 1, "F1") == TurnResult::Invalid);
-    // Invalid coordinate
-    assert!(engine.take_turn(0, 1, "COMP30023") == TurnResult::Invalid);
-    assert!(engine.take_turn(0, 1, "") == TurnResult::Invalid);
-    // Not player 2's turn
-    assert!(engine.take_turn(0, 2, "J5") == TurnResult::Invalid);
+    // notify both game ready
+    let _ = send_msg(&mut p1, MSG_READY, &[]);
+    let _ = send_msg(&mut p2, MSG_READY, &[]);
 
-    assert!(engine.take_turn(0, 1, "B2") == TurnResult::Hit);
-    assert!(engine.take_turn(0, 2, "J5") == TurnResult::Miss);
-    assert!(engine.take_turn(0, 1, "B3") == TurnResult::Hit);
-    assert!(engine.take_turn(0, 2, "J4") == TurnResult::Miss);
-    assert!(engine.take_turn(0, 1, "B4") == TurnResult::Hit);
-    assert!(engine.take_turn(0, 2, "J3") == TurnResult::Miss);
-    assert!(engine.take_turn(0, 1, "B5") == TurnResult::Sunk4);
-    assert!(engine.take_turn(0, 2, "J2") == TurnResult::Miss);
-
-    assert!(engine.take_turn(0, 1, "D2") == TurnResult::Hit);
-    assert!(engine.take_turn(0, 2, "J1") == TurnResult::Miss);
-    assert!(engine.take_turn(0, 1, "E2") == TurnResult::Hit);
-    assert!(engine.take_turn(0, 2, "I10") == TurnResult::Miss);
-    assert!(engine.take_turn(0, 1, "F2") == TurnResult::Sunk3);
-    assert!(engine.take_turn(0, 2, "I9") == TurnResult::Miss);
-
-    assert!(engine.take_turn(0, 1, "H1") == TurnResult::Hit);
-    assert!(engine.take_turn(0, 2, "I8") == TurnResult::Miss);
-    let final_result = engine.take_turn(0, 1, "H02");
-    assert!(final_result == TurnResult::Win);
-    assert!(final_result != TurnResult::Sunk2);
-
-    let invalid_extended_result = engine.take_turn_extended(0, 1, "Z9");
-    assert!(invalid_extended_result.is_empty());
-
-    let turn_result = engine.extract_turn_result(&invalid_extended_result);
-    assert!(turn_result == TurnResult::Invalid);
-
-    engine.end_game(0);
+    // keep server running
+    loop {
+        std::thread::park();
+    }
 }
