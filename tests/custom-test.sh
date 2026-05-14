@@ -103,7 +103,7 @@ fi
 echo ""
 
 echo ""
-echo "running 6 tests"
+echo "running 7 tests"
 echo ""
 
 # test connect1: single client sends JOIN, expects OK
@@ -168,6 +168,65 @@ if [ "$RESULT" = "$ERROR_HEX" ]; then
     run_test "malformed_join" "ok"
 else
     run_test "malformed_join" "fail" "expected $ERROR_HEX got $RESULT"
+fi
+
+# Python helper: full task2 flow — two clients join, place ships, expect player numbers
+py_task2_flow() {
+    python3 -c "
+import socket, threading, time
+
+def make_join(gid=0):
+    return bytes([0x01]) + (4).to_bytes(4,'big') + gid.to_bytes(4,'big')
+
+def make_ships():
+    payload = b''
+    for c,l,d in [('A1',2,0),('A2',3,0),('A3',4,0),('A4',5,0)]:
+        cb = c.encode()
+        payload += bytes([len(cb)]) + cb + bytes([l,d])
+    return bytes([0x02]) + len(payload).to_bytes(4,'big') + payload
+
+def recv_msg(s):
+    h = b''
+    while len(h)<5:
+        c = s.recv(5-len(h))
+        if not c: return None,None
+        h += c
+    t = h[0]; n = int.from_bytes(h[1:],'big')
+    body = b''
+    while len(body)<n:
+        c = s.recv(n-len(body))
+        if not c: break
+        body += c
+    return t, body
+
+out = {}
+def player(name, sock):
+    sock.sendall(make_join(0))
+    recv_msg(sock)  # OK
+    recv_msg(sock)  # READY
+    sock.sendall(make_ships())
+    t,b = recv_msg(sock)
+    out[name] = (t, b.hex() if b else '')
+
+s1 = socket.socket(); s1.settimeout(5); s1.connect(('$HOST', $PORT))
+s2 = socket.socket(); s2.settimeout(5); s2.connect(('$HOST', $PORT))
+t1=threading.Thread(target=player,args=('p1',s1)); t1.start()
+time.sleep(0.1)
+t2=threading.Thread(target=player,args=('p2',s2)); t2.start()
+t1.join(5); t2.join(5)
+print('p1=%s p2=%s' % (out.get('p1'), out.get('p2')))
+s1.close(); s2.close()
+"
+}
+
+# test task2_ships: both players send ships and receive correct player numbers
+start_server
+RESULT=$(py_task2_flow)
+stop_server
+if echo "$RESULT" | grep -q "p1=(132, '01')" && echo "$RESULT" | grep -q "p2=(132, '02')"; then
+    run_test "task2_ships" "ok"
+else
+    run_test "task2_ships" "fail" "$RESULT"
 fi
 
 # test bad_join_len: JOIN with payload length != 4 should yield ERROR

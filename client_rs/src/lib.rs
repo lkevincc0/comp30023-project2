@@ -25,6 +25,8 @@ macro_rules! dprintln {
 
 // Client → Server: Join Game
 const MSG_JOIN: u8 = 0x01;
+// Client → Server: Submit Ships
+const MSG_SHIPS: u8 = 0x02;
 
 // Server → Client: OK
 const MSG_OK: u8 = 0x81;
@@ -32,6 +34,8 @@ const MSG_OK: u8 = 0x81;
 const MSG_ERROR: u8 = 0x82;
 // Server → Client: READY
 const MSG_READY: u8 = 0x83;
+// Server → Client: assigned player number
+const MSG_PLAYER: u8 = 0x84;
 
 // send a msgs
 fn send_msg(stream: &mut TcpStream, msg_type: u8, payload: &[u8]) -> std::io::Result<()> {
@@ -123,10 +127,38 @@ impl ClientImplementation {
         msg_type == MSG_READY
     }
 
-    // TASK2 TODO
+    // TASK2: send ships, receive assigned player number
+    pub fn send_ships(&mut self, ships: &[Ship; 4]) -> i8 {
+        let stream = match self.stream.as_mut() {
+            Some(s) => s,
+            None => return -1,
+        };
 
-    pub fn send_ships(&mut self, _ships: &[Ship; 4]) -> i8 {
-        -1
+        // Serialize ships
+        let mut payload: Vec<u8> = Vec::new();
+        for ship in ships {
+            let bytes = ship.coordinate.as_bytes();
+            if bytes.len() > u8::MAX as usize {
+                return -1;
+            }
+            payload.push(bytes.len() as u8);
+            payload.extend_from_slice(bytes);
+            payload.push(ship.length);
+            payload.push(ship.direction as u8);
+        }
+
+        if send_msg(stream, MSG_SHIPS, &payload).is_err() {
+            return -1;
+        }
+
+        let (msg_type, body) = match recv_msg(stream) {
+            Ok(m) => m,
+            Err(_) => return -1,
+        };
+        if msg_type != MSG_PLAYER || body.len() != 1 {
+            return -1;
+        }
+        body[0] as i8
     }
 
     pub fn send_move(&mut self, _coordinate: &str) -> TurnResult {

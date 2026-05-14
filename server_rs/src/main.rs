@@ -3,8 +3,10 @@ extern crate core;
 mod engine_bindings;
 mod protocol;
 
-use crate::engine_bindings::Engine;
-use crate::protocol::{MSG_ERROR, MSG_JOIN, MSG_OK, MSG_READY, recv_msg, send_msg};
+use crate::engine_bindings::{Direction, Engine, Ship};
+use crate::protocol::{
+    MSG_ERROR, MSG_JOIN, MSG_OK, MSG_PLAYER, MSG_READY, MSG_SHIPS, recv_msg, send_msg,
+};
 use std::env;
 use std::ffi::c_int;
 use std::net::{TcpListener, TcpStream};
@@ -195,8 +197,99 @@ fn main() {
     let _ = send_msg(&mut p1, MSG_READY, &[]);
     let _ = send_msg(&mut p2, MSG_READY, &[]);
 
+    // TASK2: ship placement
+    // Receive ships from both players, place via engine (p1 first to get number 1).
+    let p1_ships = match recv_ships(&mut p1) {
+        Ok(s) => s,
+        Err(_) => {
+            let _ = send_msg(&mut p1, MSG_ERROR, &[]);
+            let _ = send_msg(&mut p2, MSG_ERROR, &[]);
+            engine.end_game(game_id);
+            return;
+        }
+    };
+    let p2_ships = match recv_ships(&mut p2) {
+        Ok(s) => s,
+        Err(_) => {
+            let _ = send_msg(&mut p1, MSG_ERROR, &[]);
+            let _ = send_msg(&mut p2, MSG_ERROR, &[]);
+            engine.end_game(game_id);
+            return;
+        }
+    };
+
+    let n1 = engine.place_ships(game_id, &p1_ships);
+    let n2 = engine.place_ships(game_id, &p2_ships);
+    if n1 < 0 || n2 < 0 {
+        let _ = send_msg(&mut p1, MSG_ERROR, &[]);
+        let _ = send_msg(&mut p2, MSG_ERROR, &[]);
+        engine.end_game(game_id);
+        return;
+    }
+    let _ = send_msg(&mut p1, MSG_PLAYER, &[n1 as u8]);
+    let _ = send_msg(&mut p2, MSG_PLAYER, &[n2 as u8]);
+
     // keep server running
     loop {
         std::thread::park();
     }
+}
+
+// Parse a SHIPS message into 4 ships.
+fn recv_ships(stream: &mut std::net::TcpStream) -> std::io::Result<[Ship; 4]> {
+    let (msg_type, payload) = recv_msg(stream)?;
+    if msg_type != MSG_SHIPS {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "expected SHIPS",
+        ));
+    }
+    let mut ships: Vec<Ship> = Vec::with_capacity(4);
+    let mut i = 0;
+    for _ in 0..4 {
+        if i >= payload.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "short ships payload",
+            ));
+        }
+        let clen = payload[i] as usize;
+        i += 1;
+        if i + clen + 2 > payload.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "short ships payload",
+            ));
+        }
+        let coord = std::str::from_utf8(&payload[i..i + clen])
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "bad coord utf8")
+            })?
+            .to_string();
+        i += clen;
+        let length = payload[i];
+        i += 1;
+        let direction = match payload[i] {
+            0 => Direction::Horizontal,
+            1 => Direction::Vertical,
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "bad direction",
+                ));
+            }
+        };
+        i += 1;
+        ships.push(Ship {
+            coordinate: coord,
+            length,
+            direction,
+        });
+    }
+    Ok([
+        ships.remove(0),
+        ships.remove(0),
+        ships.remove(0),
+        ships.remove(0),
+    ])
 }
