@@ -27,15 +27,36 @@ macro_rules! dprintln {
 const MSG_JOIN: u8 = 0x01;
 // Client → Server: Submit Ships
 const MSG_SHIPS: u8 = 0x02;
+// Client → Server: Make Move
+const MSG_MOVE: u8 = 0x03;
 
 // Server → Client: OK
 const MSG_OK: u8 = 0x81;
 // Server → Client: ERROR
+#[allow(dead_code)]
 const MSG_ERROR: u8 = 0x82;
 // Server → Client: READY
 const MSG_READY: u8 = 0x83;
 // Server → Client: assigned player number
 const MSG_PLAYER: u8 = 0x84;
+// Server → Client: own move result
+const MSG_TURN_RESULT: u8 = 0x85;
+// Server → Client: opponent's move and result
+const MSG_OPP_MOVE: u8 = 0x86;
+
+// Decode a 1-byte TurnResult value.
+fn decode_turn_result(b: u8) -> TurnResult {
+    match b as i8 {
+        0 => TurnResult::Miss,
+        1 => TurnResult::Hit,
+        2 => TurnResult::Win,
+        4 => TurnResult::Sunk2,
+        5 => TurnResult::Sunk3,
+        6 => TurnResult::Sunk4,
+        7 => TurnResult::Sunk5,
+        _ => TurnResult::Invalid,
+    }
+}
 
 // send a msgs
 fn send_msg(stream: &mut TcpStream, msg_type: u8, payload: &[u8]) -> std::io::Result<()> {
@@ -161,18 +182,58 @@ impl ClientImplementation {
         body[0] as i8
     }
 
-    pub fn send_move(&mut self, _coordinate: &str) -> TurnResult {
-        TurnResult::Invalid
+    // TASK3: send move, receive turn result
+    pub fn send_move(&mut self, coordinate: &str) -> TurnResult {
+        let stream = match self.stream.as_mut() {
+            Some(s) => s,
+            None => return TurnResult::Invalid,
+        };
+        if send_msg(stream, MSG_MOVE, coordinate.as_bytes()).is_err() {
+            return TurnResult::Invalid;
+        }
+        let (msg_type, body) = match recv_msg(stream) {
+            Ok(m) => m,
+            Err(_) => return TurnResult::Invalid,
+        };
+        if msg_type != MSG_TURN_RESULT || body.len() != 1 {
+            return TurnResult::Invalid;
+        }
+        decode_turn_result(body[0])
     }
 
     pub fn send_move_extended(&mut self, _coordinate: &str) -> Option<Box<[u8]>> {
         None
     }
 
+    // TASK3: block until opponent move arrives
     pub fn receive_move(&mut self) -> MoveResult {
-        MoveResult {
+        let invalid = MoveResult {
             coordinate: None,
             result: TurnResult::Invalid,
+        };
+        let stream = match self.stream.as_mut() {
+            Some(s) => s,
+            None => return invalid,
+        };
+        let (msg_type, body) = match recv_msg(stream) {
+            Ok(m) => m,
+            Err(_) => return invalid,
+        };
+        if msg_type != MSG_OPP_MOVE || body.is_empty() {
+            return invalid;
+        }
+        let clen = body[0] as usize;
+        if 1 + clen + 1 > body.len() {
+            return invalid;
+        }
+        let coord = match std::str::from_utf8(&body[1..1 + clen]) {
+            Ok(s) => s.to_string(),
+            Err(_) => return invalid,
+        };
+        let result = decode_turn_result(body[1 + clen]);
+        MoveResult {
+            coordinate: Some(coord),
+            result,
         }
     }
 

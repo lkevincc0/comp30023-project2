@@ -3,6 +3,7 @@ use std::io::{Read, Result, Write};
 // client to server
 pub const MSG_JOIN: u8 = 0x01;
 pub const MSG_SHIPS: u8 = 0x02;
+pub const MSG_MOVE: u8 = 0x03;
 
 // server to client
 /// OK
@@ -13,6 +14,10 @@ pub const MSG_ERROR: u8 = 0x82;
 pub const MSG_READY: u8 = 0x83;
 /// Player number assignment
 pub const MSG_PLAYER: u8 = 0x84;
+/// Turn result for active player
+pub const MSG_TURN_RESULT: u8 = 0x85;
+/// Opponent move + result for waiting player
+pub const MSG_OPP_MOVE: u8 = 0x86;
 
 pub fn send_msg(stream: &mut dyn Write, msg_type: u8, payload: &[u8]) -> Result<()> {
     let mut buf = Vec::with_capacity(5 + payload.len());

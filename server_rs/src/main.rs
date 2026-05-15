@@ -3,9 +3,10 @@ extern crate core;
 mod engine_bindings;
 mod protocol;
 
-use crate::engine_bindings::{Direction, Engine, Ship};
+use crate::engine_bindings::{Direction, Engine, Ship, TurnResult};
 use crate::protocol::{
-    MSG_ERROR, MSG_JOIN, MSG_OK, MSG_PLAYER, MSG_READY, MSG_SHIPS, recv_msg, send_msg,
+    MSG_ERROR, MSG_JOIN, MSG_MOVE, MSG_OK, MSG_OPP_MOVE, MSG_PLAYER, MSG_READY, MSG_SHIPS,
+    MSG_TURN_RESULT, recv_msg, send_msg,
 };
 use std::env;
 use std::ffi::c_int;
@@ -229,6 +230,52 @@ fn main() {
     let _ = send_msg(&mut p1, MSG_PLAYER, &[n1 as u8]);
     let _ = send_msg(&mut p2, MSG_PLAYER, &[n2 as u8]);
 
+    // TASK3: gameplay loop, p1 moves first
+    let mut streams = [p1, p2];
+    let mut active: usize = 0;
+    loop {
+        let other = 1 - active;
+        let (msg_type, payload) = match recv_msg(&mut streams[active]) {
+            Ok(m) => m,
+            Err(_) => {
+                let _ = send_msg(&mut streams[other], MSG_ERROR, &[]);
+                break;
+            }
+        };
+        if msg_type != MSG_MOVE || payload.is_empty() {
+            let _ = send_msg(&mut streams[active], MSG_ERROR, &[]);
+            let _ = send_msg(&mut streams[other], MSG_ERROR, &[]);
+            break;
+        }
+        let coord = match std::str::from_utf8(&payload) {
+            Ok(s) => s.to_string(),
+            Err(_) => {
+                let _ = send_msg(&mut streams[active], MSG_ERROR, &[]);
+                let _ = send_msg(&mut streams[other], MSG_ERROR, &[]);
+                break;
+            }
+        };
+
+        let player_num = (active as u8) + 1;
+        let result = engine.take_turn(game_id, player_num, &coord);
+        let result_byte = (result as i8) as u8;
+
+        let _ = send_msg(&mut streams[active], MSG_TURN_RESULT, &[result_byte]);
+
+        let mut opp_body: Vec<u8> = Vec::with_capacity(2 + payload.len());
+        opp_body.push(payload.len() as u8);
+        opp_body.extend_from_slice(&payload);
+        opp_body.push(result_byte);
+        let _ = send_msg(&mut streams[other], MSG_OPP_MOVE, &opp_body);
+
+        if matches!(result, TurnResult::Win) || matches!(result, TurnResult::Invalid) {
+            break;
+        }
+        active = other;
+    }
+
+    engine.end_game(game_id);
+
     // keep server running
     loop {
         std::thread::park();
@@ -262,9 +309,7 @@ fn recv_ships(stream: &mut std::net::TcpStream) -> std::io::Result<[Ship; 4]> {
             ));
         }
         let coord = std::str::from_utf8(&payload[i..i + clen])
-            .map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "bad coord utf8")
-            })?
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "bad coord utf8"))?
             .to_string();
         i += clen;
         let length = payload[i];
