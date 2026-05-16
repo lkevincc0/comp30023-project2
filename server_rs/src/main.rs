@@ -5,8 +5,8 @@ mod protocol;
 
 use crate::engine_bindings::{Direction, Engine, Ship, TurnResult};
 use crate::protocol::{
-    MSG_ERROR, MSG_JOIN, MSG_MOVE, MSG_OK, MSG_OPP_MOVE, MSG_PLAYER, MSG_READY, MSG_SHIPS,
-    MSG_TURN_RESULT, recv_msg, send_msg,
+    MSG_ERROR, MSG_JOIN, MSG_MOVE, MSG_MOVE_EXT, MSG_OK, MSG_OPP_MOVE, MSG_PLAYER, MSG_READY,
+    MSG_SHIPS, MSG_TURN_RESULT, MSG_TURN_RESULT_EXT, recv_msg, send_msg,
 };
 use std::env;
 use std::ffi::c_int;
@@ -242,7 +242,7 @@ fn main() {
                 break;
             }
         };
-        if msg_type != MSG_MOVE || payload.is_empty() {
+        if (msg_type != MSG_MOVE && msg_type != MSG_MOVE_EXT) || payload.is_empty() {
             let _ = send_msg(&mut streams[active], MSG_ERROR, &[]);
             let _ = send_msg(&mut streams[other], MSG_ERROR, &[]);
             break;
@@ -257,15 +257,25 @@ fn main() {
         };
 
         let player_num = (active as u8) + 1;
-        let result = engine.take_turn(game_id, player_num, &coord);
-        let result_byte = (result as i8) as u8;
 
-        let _ = send_msg(&mut streams[active], MSG_TURN_RESULT, &[result_byte]);
+        let result: TurnResult = if msg_type == MSG_MOVE_EXT {
+            // Extended encoding: forward opaque payload unchanged, then extract.
+            let data = engine.take_turn_extended(game_id, player_num, &coord);
+            let mut ext_body: Vec<u8> = Vec::with_capacity(2 + data.len());
+            ext_body.extend_from_slice(&(data.len() as u16).to_be_bytes());
+            ext_body.extend_from_slice(&data);
+            let _ = send_msg(&mut streams[active], MSG_TURN_RESULT_EXT, &ext_body);
+            engine.extract_turn_result(&data)
+        } else {
+            let r = engine.take_turn(game_id, player_num, &coord);
+            let _ = send_msg(&mut streams[active], MSG_TURN_RESULT, &[(r as i8) as u8]);
+            r
+        };
 
         let mut opp_body: Vec<u8> = Vec::with_capacity(2 + payload.len());
         opp_body.push(payload.len() as u8);
         opp_body.extend_from_slice(&payload);
-        opp_body.push(result_byte);
+        opp_body.push((result as i8) as u8);
         let _ = send_msg(&mut streams[other], MSG_OPP_MOVE, &opp_body);
 
         if matches!(result, TurnResult::Win) || matches!(result, TurnResult::Invalid) {

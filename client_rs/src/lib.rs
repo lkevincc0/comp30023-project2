@@ -29,6 +29,8 @@ const MSG_JOIN: u8 = 0x01;
 const MSG_SHIPS: u8 = 0x02;
 // Client → Server: Make Move
 const MSG_MOVE: u8 = 0x03;
+// Client → Server: Make Move (extended encoding)
+const MSG_MOVE_EXT: u8 = 0x04;
 
 // Server → Client: OK
 const MSG_OK: u8 = 0x81;
@@ -43,6 +45,8 @@ const MSG_PLAYER: u8 = 0x84;
 const MSG_TURN_RESULT: u8 = 0x85;
 // Server → Client: opponent's move and result
 const MSG_OPP_MOVE: u8 = 0x86;
+// Server → Client: extended turn result (variable-length opaque)
+const MSG_TURN_RESULT_EXT: u8 = 0x87;
 
 // Decode a 1-byte TurnResult value.
 fn decode_turn_result(b: u8) -> TurnResult {
@@ -201,8 +205,21 @@ impl ClientImplementation {
         decode_turn_result(body[0])
     }
 
-    pub fn send_move_extended(&mut self, _coordinate: &str) -> Option<Box<[u8]>> {
-        None
+    // TASK4: send move with extended encoding, return raw opaque payload
+    pub fn send_move_extended(&mut self, coordinate: &str) -> Option<Box<[u8]>> {
+        let stream = self.stream.as_mut()?;
+        if send_msg(stream, MSG_MOVE_EXT, coordinate.as_bytes()).is_err() {
+            return None;
+        }
+        let (msg_type, body) = recv_msg(stream).ok()?;
+        if msg_type != MSG_TURN_RESULT_EXT || body.len() < 2 {
+            return None;
+        }
+        let len = u16::from_be_bytes([body[0], body[1]]) as usize;
+        if 2 + len != body.len() {
+            return None;
+        }
+        Some(body[2..].to_vec().into_boxed_slice())
     }
 
     // TASK3: block until opponent move arrives

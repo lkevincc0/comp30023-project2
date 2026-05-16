@@ -4,6 +4,7 @@ use std::io::{Read, Result, Write};
 pub const MSG_JOIN: u8 = 0x01;
 pub const MSG_SHIPS: u8 = 0x02;
 pub const MSG_MOVE: u8 = 0x03;
+pub const MSG_MOVE_EXT: u8 = 0x04;
 
 // server to client
 /// OK
@@ -18,6 +19,8 @@ pub const MSG_PLAYER: u8 = 0x84;
 pub const MSG_TURN_RESULT: u8 = 0x85;
 /// Opponent move + result for waiting player
 pub const MSG_OPP_MOVE: u8 = 0x86;
+/// Extended turn result (variable-length opaque payload)
+pub const MSG_TURN_RESULT_EXT: u8 = 0x87;
 
 pub fn send_msg(stream: &mut dyn Write, msg_type: u8, payload: &[u8]) -> Result<()> {
     let mut buf = Vec::with_capacity(5 + payload.len());
