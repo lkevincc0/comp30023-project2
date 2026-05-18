@@ -1,3 +1,4 @@
+// MULTIPLE_GAMES
 extern crate core;
 
 mod engine_bindings;
@@ -8,10 +9,13 @@ use crate::protocol::{
     MSG_ERROR, MSG_JOIN, MSG_MOVE, MSG_MOVE_EXT, MSG_OK, MSG_OPP_MOVE, MSG_PLAYER, MSG_READY,
     MSG_SHIPS, MSG_TURN_RESULT, MSG_TURN_RESULT_EXT, recv_msg, send_msg,
 };
+use std::collections::HashMap;
 use std::env;
 use std::ffi::c_int;
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::io::FromRawFd;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 macro_rules! dprintln {
     () => {
@@ -31,7 +35,6 @@ macro_rules! dprintln {
     };
 }
 
-// sockets variable
 #[cfg(target_os = "linux")]
 const SOL_SOCKET: c_int = 1;
 #[cfg(target_os = "linux")]
@@ -44,9 +47,7 @@ const AF_INET: c_int = 2;
 const SOCK_STREAM: c_int = 1;
 
 unsafe extern "C" {
-    // create a socket, return fs, fail return -1
     fn socket(domain: c_int, ty: c_int, protocol: c_int) -> c_int;
-    // set socket options
     fn setsockopt(
         sockfd: c_int,
         level: c_int,
@@ -54,11 +55,8 @@ unsafe extern "C" {
         optval: *const std::ffi::c_void,
         optlen: u32,
     ) -> c_int;
-    // bind socket to ip and port
     fn bind(sockfd: c_int, addr: *const std::ffi::c_void, addrlen: u32) -> c_int;
-    // start listen requests
     fn listen(sockfd: c_int, backlog: c_int) -> c_int;
-    // close socket
     fn close(fd: c_int) -> c_int;
 }
 
@@ -68,9 +66,7 @@ fn create_listener(port: u16) -> std::io::Result<TcpListener> {
         if fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
-
-        // set SO_REUSEADDR options
-        let enable: c_int = 1; // port reuse
+        let enable: c_int = 1;
         if setsockopt(
             fd,
             SOL_SOCKET,
@@ -82,130 +78,86 @@ fn create_listener(port: u16) -> std::io::Result<TcpListener> {
             close(fd);
             return Err(std::io::Error::last_os_error());
         }
-
-        // bind localhost port
         let mut addr = [0u8; 16];
         addr[0..2].copy_from_slice(&(AF_INET as u16).to_ne_bytes());
         addr[2..4].copy_from_slice(&port.to_be_bytes());
-
         if bind(fd, addr.as_ptr() as *const std::ffi::c_void, 16) < 0 {
             close(fd);
             return Err(std::io::Error::last_os_error());
         }
-
         if listen(fd, 128) < 0 {
             close(fd);
             return Err(std::io::Error::last_os_error());
         }
-
         Ok(TcpListener::from_raw_fd(fd))
     }
 }
 
-fn accept_player(
-    listener: &TcpListener,
-    game_id: u32,
-    engine: &mut Engine,
-    is_first: bool, // use it to decide init game or not
-) -> std::io::Result<TcpStream> {
-    // wait util all join
-    let (mut stream, _addr) = listener.accept()?;
+type EngineRef = Arc<Mutex<Engine>>;
+type Pending = Arc<Mutex<HashMap<u32, Vec<TcpStream>>>>;
 
-    // read client join messages
-    let (msg_type, payload) = recv_msg(&mut stream)?;
-
+fn handle_connection(mut stream: TcpStream, pending: Pending, engine: EngineRef) {
+    let (msg_type, payload) = match recv_msg(&mut stream) {
+        Ok(m) => m,
+        Err(_) => {
+            let _ = send_msg(&mut stream, MSG_ERROR, &[]);
+            return;
+        }
+    };
     if msg_type != MSG_JOIN || payload.len() != 4 {
         let _ = send_msg(&mut stream, MSG_ERROR, &[]);
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "expected JOIN with 4-byte game_id",
-        ));
+        return;
     }
+    let game_id = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
 
-    let join_id = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
-    if join_id != game_id {
-        let _ = send_msg(&mut stream, MSG_ERROR, &[]);
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "wrong game_id",
-        ));
+    // Register this player and possibly take both streams to run the game.
+    let pair: Option<(TcpStream, TcpStream)> = {
+        let mut map = pending.lock().unwrap();
+        let slot = map.entry(game_id).or_default();
+        if slot.len() >= 2 {
+            let _ = send_msg(&mut stream, MSG_ERROR, &[]);
+            return;
+        }
+        let is_first = slot.is_empty();
+        if is_first && !engine.lock().unwrap().init_game(game_id) {
+            let _ = send_msg(&mut stream, MSG_ERROR, &[]);
+            return;
+        }
+        if send_msg(&mut stream, MSG_OK, &[]).is_err() {
+            if is_first {
+                engine.lock().unwrap().end_game(game_id);
+                map.remove(&game_id);
+            }
+            return;
+        }
+        slot.push(stream);
+        if slot.len() == 2 {
+            let mut taken = std::mem::take(slot);
+            map.remove(&game_id);
+            let p2 = taken.pop().unwrap();
+            let p1 = taken.pop().unwrap();
+            Some((p1, p2))
+        } else {
+            None
+        }
+    };
+
+    if let Some((p1, p2)) = pair {
+        run_game(game_id, p1, p2, engine);
     }
-
-    // first player touch game init
-    if is_first {
-        engine.init_game(game_id);
-    }
-
-    // reply OK
-    send_msg(&mut stream, MSG_OK, &[])?;
-    Ok(stream)
 }
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
-
-    if args.len() != 2 {
-        eprintln!("Usage: {} <port>", args[0]);
-    }
-
-    let port: u16 = args[1].parse().expect("invalid port");
-    dprintln!("Use Port: {}", port);
-
-    // init engine
-    let mut engine: Engine = match Engine::new() {
-        Some(e) => e,
-        None => {
-            eprintln!("Failed to initialise engine");
-            std::process::exit(2);
-        }
-    };
-    dprintln!("Engine Successfully Initialized");
-
-    // create tcp listener
-    let listener = match create_listener(port) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("Socket error: {}", e);
-            std::process::exit(3);
-        }
-    };
-    dprintln!("TCP Listener Successfully Created");
-
-    // TASK1: game id fix 0
-    let game_id: u32 = 0;
-
-    // accept p1
-    let mut p1 = match accept_player(&listener, game_id, &mut engine, true) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Failed to accept player 1: {}", e);
-            std::process::exit(4);
-        }
-    };
-    dprintln!("P1 Accepted");
-
-    // accept p2
-    let mut p2 = match accept_player(&listener, game_id, &mut engine, false) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Failed to accept player 2: {}", e);
-            std::process::exit(4);
-        }
-    };
-    dprintln!("P2 Accepted");
-
-    // notify both game ready
+fn run_game(game_id: u32, mut p1: TcpStream, mut p2: TcpStream, engine: EngineRef) {
     let _ = send_msg(&mut p1, MSG_READY, &[]);
     let _ = send_msg(&mut p2, MSG_READY, &[]);
 
-    // TASK2: ship placement
-    // Receive ships from both players, place via engine (p1 first to get number 1).
+    // Ship placement
     let p1_ships = match recv_ships(&mut p1) {
         Ok(s) => s,
         Err(_) => {
             let _ = send_msg(&mut p1, MSG_ERROR, &[]);
             let _ = send_msg(&mut p2, MSG_ERROR, &[]);
-            engine.end_game(game_id);
+            engine.lock().unwrap().end_game(game_id);
             return;
         }
     };
@@ -214,23 +166,28 @@ fn main() {
         Err(_) => {
             let _ = send_msg(&mut p1, MSG_ERROR, &[]);
             let _ = send_msg(&mut p2, MSG_ERROR, &[]);
-            engine.end_game(game_id);
+            engine.lock().unwrap().end_game(game_id);
             return;
         }
     };
 
-    let n1 = engine.place_ships(game_id, &p1_ships);
-    let n2 = engine.place_ships(game_id, &p2_ships);
+    let (n1, n2) = {
+        let mut e = engine.lock().unwrap();
+        (
+            e.place_ships(game_id, &p1_ships),
+            e.place_ships(game_id, &p2_ships),
+        )
+    };
     if n1 < 0 || n2 < 0 {
         let _ = send_msg(&mut p1, MSG_ERROR, &[]);
         let _ = send_msg(&mut p2, MSG_ERROR, &[]);
-        engine.end_game(game_id);
+        engine.lock().unwrap().end_game(game_id);
         return;
     }
     let _ = send_msg(&mut p1, MSG_PLAYER, &[n1 as u8]);
     let _ = send_msg(&mut p2, MSG_PLAYER, &[n2 as u8]);
 
-    // TASK3: gameplay loop, p1 moves first
+    // Gameplay loop
     let mut streams = [p1, p2];
     let mut active: usize = 0;
     loop {
@@ -257,17 +214,23 @@ fn main() {
         };
 
         let player_num = (active as u8) + 1;
-
         let result: TurnResult = if msg_type == MSG_MOVE_EXT {
-            // Extended encoding: forward opaque payload unchanged, then extract.
-            let data = engine.take_turn_extended(game_id, player_num, &coord);
+            let (data, r) = {
+                let mut e = engine.lock().unwrap();
+                let d = e.take_turn_extended(game_id, player_num, &coord);
+                let r = e.extract_turn_result(&d);
+                (d, r)
+            };
             let mut ext_body: Vec<u8> = Vec::with_capacity(2 + data.len());
             ext_body.extend_from_slice(&(data.len() as u16).to_be_bytes());
             ext_body.extend_from_slice(&data);
             let _ = send_msg(&mut streams[active], MSG_TURN_RESULT_EXT, &ext_body);
-            engine.extract_turn_result(&data)
+            r
         } else {
-            let r = engine.take_turn(game_id, player_num, &coord);
+            let r = engine
+                .lock()
+                .unwrap()
+                .take_turn(game_id, player_num, &coord);
             let _ = send_msg(&mut streams[active], MSG_TURN_RESULT, &[(r as i8) as u8]);
             r
         };
@@ -284,15 +247,54 @@ fn main() {
         active = other;
     }
 
-    engine.end_game(game_id);
+    engine.lock().unwrap().end_game(game_id);
+}
 
-    // keep server running
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        eprintln!("Usage: {} <port>", args[0]);
+        std::process::exit(1);
+    }
+    let port: u16 = args[1].parse().expect("invalid port");
+    dprintln!("Use Port: {}", port);
+
+    let engine = match Engine::new() {
+        Some(e) => Arc::new(Mutex::new(e)),
+        None => {
+            eprintln!("Failed to initialise engine");
+            std::process::exit(2);
+        }
+    };
+    dprintln!("Engine Successfully Initialized");
+
+    let listener = match create_listener(port) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Socket error: {}", e);
+            std::process::exit(3);
+        }
+    };
+    dprintln!("TCP Listener Successfully Created");
+
+    let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+
+    // Accept loop: spawn a thread per connection so a hanging client doesn't block others.
     loop {
-        std::thread::park();
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let pending = pending.clone();
+                let engine = engine.clone();
+                thread::spawn(move || handle_connection(stream, pending, engine));
+            }
+            Err(e) => {
+                dprintln!("accept failed: {}", e);
+                continue;
+            }
+        }
     }
 }
 
-// Parse a SHIPS message into 4 ships.
 fn recv_ships(stream: &mut std::net::TcpStream) -> std::io::Result<[Ship; 4]> {
     let (msg_type, payload) = recv_msg(stream)?;
     if msg_type != MSG_SHIPS {

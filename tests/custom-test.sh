@@ -103,7 +103,7 @@ fi
 echo ""
 
 echo ""
-echo "running 7 tests"
+echo "running 8 tests"
 echo ""
 
 # test connect1: single client sends JOIN, expects OK
@@ -147,14 +147,14 @@ else
     run_test "ready" "fail" "P1=$P1_OUT P2=$P2_OUT"
 fi
 
-# test wrong_game_id: server rejects mismatched game_id
+# test alt_game_id: with MULTIPLE_GAMES, any game_id is accepted
 start_server
 RESULT=$(py_send "$JOIN_WRONG")
 stop_server
-if [ "$RESULT" = "$ERROR_HEX" ]; then
-    run_test "wrong_game_id" "ok"
+if [ "$RESULT" = "$OK_HEX" ]; then
+    run_test "alt_game_id" "ok"
 else
-    run_test "wrong_game_id" "fail" "expected $ERROR_HEX got $RESULT"
+    run_test "alt_game_id" "fail" "expected $OK_HEX got $RESULT"
 fi
 
 # ---- custom tests (mirror test-data-custom/task1) ----
@@ -238,6 +238,54 @@ if [ "$RESULT" = "$ERROR_HEX" ]; then
     run_test "bad_join_len" "ok"
 else
     run_test "bad_join_len" "fail" "expected $ERROR_HEX got $RESULT"
+fi
+
+# test concurrent_games: two games (id=0, id=1) progress independently
+start_server
+CG=$(python3 -c "
+import socket, threading, time
+def send(s, t, p=b''): s.sendall(bytes([t])+len(p).to_bytes(4,'big')+p)
+def recv(s):
+    h=b''
+    while len(h)<5:
+        c=s.recv(5-len(h))
+        if not c: return None,None
+        h+=c
+    n=int.from_bytes(h[1:],'big'); b=b''
+    while len(b)<n:
+        c=s.recv(n-len(b))
+        if not c: break
+        b+=c
+    return h[0], b
+def ships():
+    p=b''
+    for c,l,d in [('A1',2,0),('A2',3,0),('A3',4,0),('A4',5,0)]:
+        cb=c.encode(); p+=bytes([len(cb)])+cb+bytes([l,d])
+    return p
+out={}
+def play(name, gid):
+    s=socket.socket(); s.settimeout(5); s.connect(('127.0.0.1',30023))
+    send(s, 0x01, gid.to_bytes(4,'big'))
+    recv(s)  # OK
+    recv(s)  # READY
+    send(s, 0x02, ships())
+    out[name]=recv(s)  # PLAYER
+    s.close()
+def pair(gid, a, b):
+    t1=threading.Thread(target=play,args=(a,gid)); t1.start(); time.sleep(0.05)
+    t2=threading.Thread(target=play,args=(b,gid)); t2.start()
+    t1.join(5); t2.join(5)
+ta=threading.Thread(target=pair,args=(0,'g0p1','g0p2'))
+tb=threading.Thread(target=pair,args=(1,'g1p1','g1p2'))
+ta.start(); tb.start(); ta.join(8); tb.join(8)
+print('g0p1=%s g0p2=%s g1p1=%s g1p2=%s' % (out.get('g0p1'),out.get('g0p2'),out.get('g1p1'),out.get('g1p2')))
+")
+stop_server
+if echo "$CG" | grep -q "g0p1=(132, b'\\\\x01') g0p2=(132, b'\\\\x02')" && \
+   echo "$CG" | grep -q "g1p1=(132, b'\\\\x01') g1p2=(132, b'\\\\x02')"; then
+    run_test "concurrent_games" "ok"
+else
+    run_test "concurrent_games" "fail" "$CG"
 fi
 
 # summary
