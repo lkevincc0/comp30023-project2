@@ -4,17 +4,19 @@ extern crate core;
 mod engine_bindings;
 mod protocol;
 
-use crate::engine_bindings::{Direction, Engine, Ship, TurnResult};
+use crate::engine_bindings::{Direction, Engine, Ship, TurnResult, raw_engine_free};
 use crate::protocol::{
     MSG_ERROR, MSG_JOIN, MSG_MOVE, MSG_MOVE_EXT, MSG_OK, MSG_OPP_MOVE, MSG_PLAYER, MSG_READY,
     MSG_SHIPS, MSG_TURN_RESULT, MSG_TURN_RESULT_EXT, recv_msg, send_msg,
 };
 use std::collections::HashMap;
 use std::env;
-use std::ffi::c_int;
+use std::ffi::{c_int, c_void};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::io::FromRawFd;
-use std::sync::{Arc, Mutex};
+use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 macro_rules! dprintln {
@@ -45,6 +47,30 @@ const SOL_SOCKET: c_int = 0xffff;
 const SO_REUSEADDR: c_int = 0x0004;
 const AF_INET: c_int = 2;
 const SOCK_STREAM: c_int = 1;
+
+const SIGINT: c_int = 2;
+const SIGTERM: c_int = 15;
+
+// Keeps the Arc<Mutex<Engine>> reachable from a global so Valgrind classifies the
+// allocation as "still reachable" instead of "definitely lost" after SIGTERM.
+static ENGINE_HOLDER: OnceLock<Arc<Mutex<Engine>>> = OnceLock::new();
+
+// Raw engine pointer captured for the signal handler (engine_free is not safe to
+// reach through Mutex::lock in async-signal context).
+static ENGINE_RAW: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+
+unsafe extern "C" {
+    fn signal(signum: c_int, handler: extern "C" fn(c_int)) -> *mut c_void;
+    fn _exit(status: c_int) -> !;
+}
+
+extern "C" fn on_shutdown(_sig: c_int) {
+    let p = ENGINE_RAW.swap(ptr::null_mut(), Ordering::SeqCst);
+    if !p.is_null() {
+        unsafe { raw_engine_free(p) };
+    }
+    unsafe { _exit(0) };
+}
 
 unsafe extern "C" {
     fn socket(domain: c_int, ty: c_int, protocol: c_int) -> c_int;
@@ -267,21 +293,32 @@ fn main() {
     };
     dprintln!("Use Port: {}", port);
 
-    let engine = match Engine::new() {
-        Some(e) => Arc::new(Mutex::new(e)),
+    let engine_inner = match Engine::new() {
+        Some(e) => e,
         None => {
             eprintln!("Failed to initialise engine");
             std::process::exit(2);
         }
     };
+    ENGINE_RAW.store(engine_inner.as_raw_ptr(), Ordering::SeqCst);
+    let _ = ENGINE_HOLDER.set(Arc::new(Mutex::new(engine_inner)));
+    let engine = ENGINE_HOLDER.get().unwrap().clone();
     dprintln!("Engine Successfully Initialized");
+
+    // Install signal handlers so SIGTERM/SIGINT free the engine cleanly.
+    unsafe {
+        signal(SIGTERM, on_shutdown);
+        signal(SIGINT, on_shutdown);
+    }
 
     let listener = match create_listener(port) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("Socket error: {}", e);
-            // Drop the Arc so the Engine's Drop runs engine_free.
-            drop(engine);
+            let p = ENGINE_RAW.swap(ptr::null_mut(), Ordering::SeqCst);
+            if !p.is_null() {
+                unsafe { raw_engine_free(p) };
+            }
             std::process::exit(3);
         }
     };

@@ -89,6 +89,19 @@ impl Engine {
         Some(Engine { engine })
     }
 
+    /// Raw engine pointer, for use by signal handlers that need to call `engine_free`
+    /// without going through `Drop`.
+    pub fn as_raw_ptr(&self) -> *mut c_void {
+        self.engine as *mut c_void
+    }
+}
+
+/// Free an engine via its raw pointer (signal-handler safe).
+pub unsafe fn raw_engine_free(p: *mut c_void) {
+    unsafe { engine_free(p as *mut EngineOpaque) };
+}
+
+impl Engine {
     /// Initialise a game with the given ID.
     ///
     /// * `game_id` - ID of game.
