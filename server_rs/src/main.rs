@@ -120,6 +120,8 @@ fn handle_connection(mut stream: TcpStream, pending: Pending, engine: EngineRef)
         }
         let is_first = slot.is_empty();
         if is_first && !engine.lock().unwrap().init_game(game_id) {
+            // Another game with this id is still active; reject without leaking the slot.
+            map.remove(&game_id);
             let _ = send_msg(&mut stream, MSG_ERROR, &[]);
             return;
         }
@@ -256,7 +258,13 @@ fn main() {
         eprintln!("Usage: {} <port>", args[0]);
         std::process::exit(1);
     }
-    let port: u16 = args[1].parse().expect("invalid port");
+    let port: u16 = match args[1].parse() {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("Invalid port: {}", args[1]);
+            std::process::exit(5);
+        }
+    };
     dprintln!("Use Port: {}", port);
 
     let engine = match Engine::new() {
@@ -272,6 +280,8 @@ fn main() {
         Ok(l) => l,
         Err(e) => {
             eprintln!("Socket error: {}", e);
+            // Drop the Arc so the Engine's Drop runs engine_free.
+            drop(engine);
             std::process::exit(3);
         }
     };

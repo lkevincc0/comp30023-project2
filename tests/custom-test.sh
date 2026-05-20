@@ -103,7 +103,7 @@ fi
 echo ""
 
 echo ""
-echo "running 8 tests"
+echo "running 9 tests"
 echo ""
 
 # test connect1: single client sends JOIN, expects OK
@@ -238,6 +238,40 @@ if [ "$RESULT" = "$ERROR_HEX" ]; then
     run_test "bad_join_len" "ok"
 else
     run_test "bad_join_len" "fail" "expected $ERROR_HEX got $RESULT"
+fi
+
+# test third_player_rejected: a 3rd JOIN to a full game returns ERROR
+start_server
+TP=$(python3 -c "
+import socket
+def send(s,t,p=b''): s.sendall(bytes([t])+len(p).to_bytes(4,'big')+p)
+def recv(s):
+    h=b''
+    while len(h)<5:
+        c=s.recv(5-len(h))
+        if not c: return None,None
+        h+=c
+    n=int.from_bytes(h[1:],'big'); b=b''
+    while len(b)<n:
+        c=s.recv(n-len(b))
+        if not c: break
+        b+=c
+    return h[0],b
+s1=socket.socket(); s1.settimeout(3); s1.connect(('$HOST',$PORT))
+s2=socket.socket(); s2.settimeout(3); s2.connect(('$HOST',$PORT))
+send(s1,0x01,(0).to_bytes(4,'big')); recv(s1)
+send(s2,0x01,(0).to_bytes(4,'big')); recv(s2)
+recv(s1); recv(s2)
+s3=socket.socket(); s3.settimeout(3); s3.connect(('$HOST',$PORT))
+send(s3,0x01,(0).to_bytes(4,'big'))
+t,b = recv(s3)
+print('p3=%s' % t)
+")
+stop_server
+if echo "$TP" | grep -q "p3=130"; then
+    run_test "third_player_rejected" "ok"
+else
+    run_test "third_player_rejected" "fail" "$TP"
 fi
 
 # test concurrent_games: two games (id=0, id=1) progress independently
