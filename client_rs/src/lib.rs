@@ -98,19 +98,10 @@ impl ClientImplementation {
 
     // client connect to server and join game
     pub fn connect(&mut self, addr: &str, port: u16, game_id: u32) -> bool {
-        let full_addr = format!("{}:{}", addr, port);
-        dprintln!("Attempting to connect to {}", full_addr);
-
         // TCP Connect
         let mut stream = match TcpStream::connect(format!("{}:{}", addr, port)) {
-            Ok(s) => {
-                dprintln!("TCP connection established.");
-                s
-            }
-            Err(e) => {
-                dprintln!("TCP connection failed: {}", e);
-                return false;
-            }
+            Ok(s) => s,
+            Err(_) => return false,
         };
 
         // send join messages
@@ -121,10 +112,7 @@ impl ClientImplementation {
         // wait for server reply
         let (msg_type, _) = match recv_msg(&mut stream) {
             Ok(m) => m,
-            Err(e) => {
-                dprintln!("Failed to receive response from server: {:?}", e);
-                return false;
-            }
+            Err(_) => return false,
         };
 
         if msg_type != MSG_OK {

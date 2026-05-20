@@ -297,10 +297,7 @@ fn main() {
                 let engine = engine.clone();
                 thread::spawn(move || handle_connection(stream, pending, engine));
             }
-            Err(e) => {
-                dprintln!("accept failed: {}", e);
-                continue;
-            }
+            Err(_) => continue,
         }
     }
 }
